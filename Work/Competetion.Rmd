@@ -1,0 +1,370 @@
+---
+title: "Project_Lin"
+author: "Zhenghao Lin"
+date: "2024-04-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, message=FALSE, warning=FALSE}
+#Install library
+library(lubridate)
+library(ggplot2)
+library(forecast)  
+library(Kendall)
+library(tseries)
+library(outliers)
+library(tidyverse)
+library(smooth)
+library(zoo)
+library(kableExtra)
+library(readxl)
+```
+
+```{r}
+#Import datasets
+load<- read_excel("/Users/lzh/Desktop/LinPace_TSA_competition/Data/load.xlsx")
+hum <- read_excel("/Users/lzh/Desktop/LinPace_TSA_competition/Data/relative_humidity.xlsx")
+temp <- read_excel("/Users/lzh/Desktop/LinPace_TSA_competition/Data/temperature.xlsx")
+```
+
+```{r}
+#Date & time objects conversion
+#load
+#The dataset "load" use hour as the columns and date as the rows. 
+#Adjust the dataset to be more suitable to convert into time series dataset.
+load <- pivot_longer(load, cols = starts_with("h"), names_to = "hour", values_to = "load")
+#Convert hour object as numeric
+load$hour <- as.numeric(gsub("h", "", load$hour))
+#Fix date columns and select needed columns
+load <- load %>% 
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hour) %>% 
+  select(Date, Year, Month, Day, Hour, load)
+
+#relative_humidity
+#Fix date columns and select needed columns
+hum <- hum %>%
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hr) %>%
+  select(Date, Year, Month, Day, Hour, rh_ws1:rh_ws28)
+
+#temperature
+#Fix date columns and select needed columns
+temp <- temp %>%
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hr) %>%
+  select(Date, Year, Month, Day, Hour, t_ws1:t_ws28)
+```
+
+```{r}
+#Creating data frames with daily observations
+#load
+load_daily <- load %>% 
+  filter(!is.na(load)) %>% 
+  group_by(Date,Year,Month,Day) %>% 
+  summarise( daily_mean_load = mean(load)) 
+
+ggplot(load_daily, aes(x=Date,y=daily_mean_load)) +
+  geom_line() +
+  ylab("Average Daily Load")
+
+summary(load_daily$daily_mean_load)
+
+#relative_humidity
+
+
+#temperature
+
+```
+```{r}
+#Transform daily dataframes into time series objects
+#load
+ts_load_daily <- msts(load_daily$daily_mean_load, 
+                           seasonal.periods =c(7,365.25),
+                           start=c(2005,1,1))
+
+```
+
+```{r}
+# Decompose time series objects
+ts_load_daily %>% mstl() %>%
+  autoplot()
+```
+## Forecast for period 01/01/2010-01/31/2010
+```{r}
+#create the training subset considering period 01/01/2005-12/31/2009
+total_days = length(ts_load_daily)
+days_after_2009 = 546
+ts_load_daily_train_2010 <- subset(ts_load_daily,
+                              end = total_days-days_after_2009)
+
+#create testing subset
+ts_load_daily_test_2010 <- subset(ts_load_daily,
+                                  start = total_days-days_after_2009,
+                                  end = total_days-days_after_2009+31)
+
+#Creat dataframe subset for plot fitting comparison
+ts_load_daily_fit_2010 <- subset(ts_load_daily,
+                                  end = total_days-days_after_2009+31)
+
+
+autoplot(ts_load_daily_train_2010)
+autoplot(ts_load_daily_test_2010)
+autoplot(ts_load_daily_fit_2010)
+```
+
+```{r}
+#Model 1: STL + ETS
+#Forecast for 01/01/2010-01/31/2010
+#Fit and forecast STL + ETS model to data
+ETS_fit_2010 <-  stlf(ts_load_daily_train_2010,h=31)
+
+#Plot foresting results
+autoplot(ETS_fit_2010) + ylab("Load")
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2010) +
+  autolayer(ETS_fit_2010, series="STL + ETS forecast for 01/01/2010-01/31/2010",PI=FALSE) +
+  ylab("Load")
+```
+
+```{r}
+#Model 2: ARIMA + FOURIER terms
+#Fit arima model with fourier terms as exogenous regressors
+ARIMA_Four_fit_2010 <- auto.arima(ts_load_daily_train_2010, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily_train_2010, 
+                                          K=c(2,12))
+                             )
+
+#Forecast with ARIMA fit
+ARIMA_Four_for_2010 <- forecast(ARIMA_Four_fit_2010,
+                           xreg=fourier(ts_load_daily_train_2010,
+                                        K=c(2,12),
+                                        h=31),
+                           h=31
+                           ) 
+
+#Plot foresting results
+autoplot(ARIMA_Four_for_2010) + ylab("Load")
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2010) +
+  autolayer(ARIMA_Four_for_2010, series="ARIMA_FOURIER forecast for 01/01/2010-01/31/2010",PI=FALSE) +
+  ylab("Load")
+```
+
+```{r}
+#Model 3: TBATS
+TBATS_fit_2010 <- tbats(ts_load_daily_train_2010)
+
+TBATS_for_2010 <- forecast(TBATS_fit_2010, h=31)
+
+#Plot foresting results
+autoplot(TBATS_for_2010) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2010) +
+  autolayer(TBATS_for_2010, series="TBATS forecast for 01/01/2010-01/31/2010",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+# Model 4: Neural Network Time Series Forecasts
+NN_fit_2010 <- nnetar(ts_load_daily_train_2010,p=2,P=2,xreg=fourier(ts_load_daily_train_2010, K=c(2,12)))
+
+NN_for_2010 <- forecast(NN_fit_2010, h=365,xreg=fourier(ts_load_daily_train_2010, 
+                                          K=c(2,12),h=31))
+
+#Plot foresting results
+autoplot(NN_for_2010) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2010) +
+  autolayer(NN_for_2010, series="Neural Network forecast for 01/01/2010-01/31/2010",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+#Check accuracy of the models
+#Model 1: STL + ETS
+ETS_scores_2010 <- accuracy(ETS_fit_2010$mean,ts_load_daily_test_2010)  
+
+#Model 2: ARIMA + Fourier 
+ARIMA_scores_2010 <- accuracy(ARIMA_Four_for_2010$mean,ts_load_daily_test_2010)
+
+# Model 3:  TBATS 
+TBATS_scores_2010 <- accuracy(TBATS_for_2010$mean,ts_load_daily_test_2010)
+
+# Model 4:  Neural Network 
+NN_scores_2010 <- accuracy(NN_for_2010$mean,ts_load_daily_test_2010)
+```
+
+```{r}
+#Compare performance metrics
+scores_2010 <- as.data.frame(
+  rbind(ETS_scores_2010, ARIMA_scores_2010, TBATS_scores_2010, NN_scores_2010)
+  )
+row.names(scores_2010) <- c("STL+ETS", "ARIMA+Fourier","TBATS","NN")
+
+#choose model with lowest RMSE
+best_model_index_2010 <- which.min(scores_2010[,"MAPE"])
+cat("The best model to forecast 01/01/2010-01/31/2010 by MAPE is:", row.names(scores[best_model_index_2010,]))    
+
+#Compare results in a table format
+kbl(scores_2010, 
+      caption = "Forecast Accuracy for Daily Load",
+      digits = array(5,ncol(scores_2010))) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = "hold_position") %>%
+  #highlight model with lowest MAPE
+  kable_styling(latex_options="striped", stripe_index = which.min(scores_2010[,"MAPE"]))
+```
+
+## Forecast for period 01/01/2011-01/31/2011
+```{r}
+#create the training subset considering period 01/01/2005-12/31/2010
+total_days = length(ts_load_daily)
+days_after_2010 = 546-365
+ts_load_daily_train_2011 <- subset(ts_load_daily,
+                              end = total_days-days_after_2010)
+
+#create testing subset
+ts_load_daily_test_2011 <- subset(ts_load_daily,
+                                  start = total_days-days_after_2010,
+                                  end = total_days-days_after_2010+31)
+
+#Creat dataframe subset for plot fitting comparison
+ts_load_daily_fit_2011 <- subset(ts_load_daily,
+                                  end = total_days-days_after_2010+31)
+
+
+autoplot(ts_load_daily_train_2011)
+autoplot(ts_load_daily_test_2011)
+autoplot(ts_load_daily_fit_2011)
+```
+
+```{r}
+#Model 1: STL + ETS
+#Forecast for 01/01/2011-01/31/2011
+#Fit and forecast STL + ETS model to data
+ETS_fit_2011 <-  stlf(ts_load_daily_train_2011,h=31)
+
+#Plot foresting results
+autoplot(ETS_fit_2011) + ylab("Load")
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2011) +
+  autolayer(ETS_fit_2011, series="STL + ETS forecast for 01/01/2011-01/31/2011",PI=FALSE) +
+  ylab("Load")
+```
+
+```{r}
+#Model 2: ARIMA + FOURIER terms
+#Fit arima model with fourier terms as exogenous regressors
+ARIMA_Four_fit_2011 <- auto.arima(ts_load_daily_train_2011, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily_train_2011, 
+                                          K=c(2,12))
+                             )
+
+#Forecast with ARIMA fit
+ARIMA_Four_for_2011 <- forecast(ARIMA_Four_fit_2011,
+                           xreg=fourier(ts_load_daily_train_2011,
+                                        K=c(2,12),
+                                        h=31),
+                           h=31
+                           ) 
+
+#Plot foresting results
+autoplot(ARIMA_Four_for_2011) + ylab("Load")
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2011) +
+  autolayer(ARIMA_Four_for_2011, series="ARIMA_FOURIER forecast for 01/01/2011-01/31/2011",PI=FALSE) +
+  ylab("Load")
+```
+
+```{r}
+#Model 3: TBATS
+TBATS_fit_2011 <- tbats(ts_load_daily_train_2011)
+
+TBATS_for_2011 <- forecast(TBATS_fit_2011, h=31)
+
+#Plot foresting results
+autoplot(TBATS_for_2011) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2011) +
+  autolayer(TBATS_for_2011, series="TBATS forecast for 01/01/2011-01/31/2011",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+# Model 4: Neural Network Time Series Forecasts
+NN_fit_2011 <- nnetar(ts_load_daily_train_2011,p=2,P=2,xreg=fourier(ts_load_daily_train_2011, K=c(2,12)))
+
+NN_for_2011 <- forecast(NN_fit_2011, h=365,xreg=fourier(ts_load_daily_train_2011, 
+                                          K=c(2,12),h=31))
+
+#Plot foresting results
+autoplot(NN_for_2011) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily_fit_2011) +
+  autolayer(NN_for_2011, series="Neural Network forecast for 01/01/2011-01/31/2011",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+#Check accuracy of the models
+#Model 1: STL + ETS
+ETS_scores_2011 <- accuracy(ETS_fit_2011$mean,ts_load_daily_test_2011)  
+
+#Model 2: ARIMA + Fourier 
+ARIMA_scores_2011 <- accuracy(ARIMA_Four_for_2011$mean,ts_load_daily_test_2011)
+
+# Model 3:  TBATS 
+TBATS_scores_2011 <- accuracy(TBATS_for_2011$mean,ts_load_daily_test_2011)
+
+# Model 4:  Neural Network 
+NN_scores_2011 <- accuracy(NN_for_2011$mean,ts_load_daily_test_2011)
+```
+
+```{r}
+#Compare performance metrics
+scores_2011 <- as.data.frame(
+  rbind(ETS_scores_2011, ARIMA_scores_2011, TBATS_scores_2011, NN_scores_2011)
+  )
+row.names(scores_2011) <- c("STL+ETS", "ARIMA+Fourier","TBATS","NN")
+
+#choose model with lowest RMSE
+best_model_index_2011 <- which.min(scores_2011[,"MAPE"])
+cat("The best model to forecast 01/01/2011-01/31/2011 by MAPE is:", row.names(scores[best_model_index_2011,]))    
+
+#Compare results in a table format
+kbl(scores_2011, 
+      caption = "Forecast Accuracy for Daily Load",
+      digits = array(5,ncol(scores_2011))) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = "hold_position") %>%
+  #highlight model with lowest MAPE
+  kable_styling(latex_options="striped", stripe_index = which.min(scores_2011[,"MAPE"]))
+```
