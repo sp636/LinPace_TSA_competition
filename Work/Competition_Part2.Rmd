@@ -236,7 +236,7 @@ TBATS_for_july2011 <- forecast(TBATS_fit_all, h=31)
 #generate df
 TBATS.df <- data.frame(TBATS_for_july2011$mean)
 
-write.table(TBATS.df, file = "Data/Submission1")
+write.csv(TBATS.df, file = "Data/Submission2", row.names=F)
 
 
 #Plot foresting results
