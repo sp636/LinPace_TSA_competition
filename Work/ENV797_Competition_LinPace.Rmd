@@ -1,0 +1,462 @@
+---
+title: "ENV797_Competition_LinPace"
+author: "Samantha Pace, Will Lin"
+date: "2024-04-25"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, message=FALSE, warning=FALSE}
+
+#install.packages("readxl")
+#Install library
+library(lubridate)
+library(ggplot2)
+library(forecast)  
+library(Kendall)
+library(tseries)
+library(outliers)
+library(tidyverse)
+library(smooth)
+library(zoo)
+library(kableExtra)
+library(readxl)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+getwd()
+
+#Import datasets
+load <- read_excel("./Data/load.xlsx")
+#hum <- read_excel("./Data/relative_humidity.xlsx")
+#temp <- read_excel("./Data/temperature.xlsx")
+```
+
+# Competition Part 1
+
+```{r, message=FALSE, warning=FALSE}
+#Date & time objects conversion
+#load
+#The dataset "load" use hour as the columns and date as the rows. 
+#Adjust the dataset to be more suitable to convert into time series dataset.
+load <- pivot_longer(load, cols = starts_with("h"), names_to = "hour", values_to = "load")
+#Convert hour object as numeric
+load$hour <- as.numeric(gsub("h", "", load$hour))
+#Fix date columns and select needed columns
+load <- load %>% 
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hour) %>% 
+  select(Date, Year, Month, Day, Hour, load)
+
+#relative_humidity
+#Fix date columns and select needed columns
+#hum <- hum %>%
+#  mutate(Date = ymd(date)) %>%
+#  mutate(Year = year(date), 
+#          Month = month(date), 
+ #         Day = day(date), 
+#          Hour = hr) %>%
+#  select(Date, Year, Month, Day, Hour, rh_ws1:rh_ws28)
+
+#temperature
+#Fix date columns and select needed columns
+#temp <- temp %>%
+#  mutate(Date = ymd(date)) %>%
+#  mutate(Year = year(date), 
+#          Month = month(date), 
+#         Day = day(date), 
+#          Hour = hr) %>%
+ # select(Date, Year, Month, Day, Hour, t_ws1:t_ws28)
+```
+
+```{r, message=FALSE, warning=FALSE}
+#Creating data frames with daily observations
+#load
+load_daily <- load %>% 
+  filter(!is.na(load)) %>% 
+  group_by(Date,Year,Month,Day) %>% 
+  summarise( daily_mean_load = mean(load)) 
+
+ggplot(load_daily, aes(x=Date,y=daily_mean_load)) +
+  geom_line() +
+  ylab("Average Daily Load")
+
+summary(load_daily$daily_mean_load)
+```
+
+```{r}
+#Transform daily dataframes into time series objects
+ts_load_daily <- msts(load_daily$daily_mean_load, 
+                           seasonal.periods =c(7,365.25),
+                           start=c(2005,1,1))
+
+```
+
+```{r}
+# Decompose time series objects
+ts_load_daily %>% mstl() %>%
+  autoplot()
+```
+
+# Competition Part 2
+
+```{r}
+#create the training subset considering period 01/01/2005-12/31/2009
+total_days = length(ts_load_daily)
+days_june_2011 = 30
+days_july_2011 = 31
+
+ts_load_daily_train <- subset(ts_load_daily,
+                              end = total_days-days_june_2011)
+
+#create testing subset
+ts_load_daily_test <- subset(ts_load_daily,
+                                  start = total_days-days_june_2011)
+
+#Creat dataframe subset for plot fitting comparison
+ts_load_daily_fit_july11 <- subset(ts_load_daily,
+                                end = total_days+days_july_2011)
+
+
+autoplot(ts_load_daily_train)
+autoplot(ts_load_daily_test)
+```
+
+```{r}
+#Model 1: STL + ETS
+#Fit and forecast STL + ETS model to data
+
+#STL on train (all but june 2011)
+ETS_fit_train <-  stlf(ts_load_daily_train,h=30) # changed to 30 for 30 days of june
+
+#Plot foresting results
+autoplot(ETS_fit_train) + ylab("Load")
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(ETS_fit_train, series="STL + ETS fit",PI=FALSE) +
+  ylab("Load")
+```
+
+```{r}
+#Model 2: ARIMA + FOURIER terms
+#Fit arima model with fourier terms as exogenous regressors
+ARIMA_Four_fit <- auto.arima(ts_load_daily_train, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily_train, 
+                                          K=c(2,12))
+                             )
+#Forecast with ARIMA fit
+ARIMA_Four_for <- forecast(ARIMA_Four_fit,
+                           xreg=fourier(ts_load_daily_train,
+                                        K=c(2,12),
+                                        h=30),
+                           h=30
+                           ) 
+
+#Fit arima model with fourier terms as exogenous regressors. version 2
+ARIMA_Four_fit2 <- auto.arima(ts_load_daily_train, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily_train, 
+                                          K=c(2,2))
+                             )
+ARIMA_Four_for2 <- forecast(ARIMA_Four_fit2,
+                           xreg=fourier(ts_load_daily_train,
+                                        K=c(2,2),
+                                        h=30),
+                           h=30
+                           ) 
+
+#Fit arima model with fourier terms as exogenous regressors. version 3
+ARIMA_Four_fit3 <- auto.arima(ts_load_daily_train, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily_train, 
+                                          K=c(2,4))
+                             )
+
+ARIMA_Four_for3 <- forecast(ARIMA_Four_fit3,
+                           xreg=fourier(ts_load_daily_train,
+                                        K=c(2,4),
+                                        h=30),
+                           h=30
+                           ) 
+
+#Fit arima model with fourier terms as exogenous regressors. version 4
+ARIMA_Four_fit4 <- auto.arima(ts_load_daily_train, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily_train, 
+                                          K=c(2,6))
+                             )
+
+ARIMA_Four_for4 <- forecast(ARIMA_Four_fit4,
+                           xreg=fourier(ts_load_daily_train,
+                                        K=c(2,6),
+                                        h=30),
+                           h=30
+                           ) 
+
+#Plot foresting results
+autoplot(ARIMA_Four_for) + ylab("Load")
+autoplot(ARIMA_Four_for2) + ylab("Load")
+autoplot(ARIMA_Four_for3) + ylab("Load")
+autoplot(ARIMA_Four_for4) + ylab("Load")
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(ARIMA_Four_for, series="ARIMA_FOURIER forecast for June 2011",PI=FALSE) +
+  ylab("Load")
+```
+
+```{r}
+#Model 3: TBATS
+TBATS_fit <- tbats(ts_load_daily_train)
+
+TBATS_for <- forecast(TBATS_fit, h=30)
+
+#Plot foresting results
+autoplot(TBATS_for) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(TBATS_for, series="TBATS forecast for June 2011",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+# Model 4: Neural Network Time Series Forecasts
+# can change the P and p; like ARIMA
+NN_fit <- nnetar(ts_load_daily_train,
+                 p=2,
+                 P=2,
+                 xreg=fourier(ts_load_daily_train, K=c(2,12)))
+
+NN_for <- forecast(NN_fit, h=30,xreg=fourier(ts_load_daily_train, 
+                                          K=c(2,12),h=31))
+
+#Plot foresting results
+autoplot(NN_for) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(NN_for, series="Neural Network forecast for June 2011",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+# Model 5: Neural Network Time Series Forecasts
+# can change the P and p; like ARIMA
+NN_fit2 <- nnetar(ts_load_daily_train,
+                 p=6,
+                 P=10,
+                 xreg=fourier(ts_load_daily_train, K=c(2,12)))
+
+NN_for2 <- forecast(NN_fit2, h=30,xreg=fourier(ts_load_daily_train, 
+                                          K=c(2,12),h=31))
+
+#Plot foresting results
+autoplot(NN_for2) +
+  ylab("Load") 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(NN_for2, series="Neural Network forecast 2 for June 2011",PI=FALSE)+
+  ylab("Load") 
+```
+
+```{r}
+#Check accuracy of the models
+#Model 1: STL + ETS
+ETS_scores <- accuracy(ETS_fit_train$mean,ts_load_daily_test)  
+
+#Model 2: ARIMA + Fourier 
+ARIMA_scores <- accuracy(ARIMA_Four_for$mean,ts_load_daily_test)
+
+#Model: ARIMA + Fourier 2 
+ARIMA_scores2 <- accuracy(ARIMA_Four_for2$mean,ts_load_daily_test)
+
+#Model: ARIMA + Fourier 3
+ARIMA_scores3 <- accuracy(ARIMA_Four_for3$mean,ts_load_daily_test)
+
+#Model: ARIMA + Fourier 4
+ARIMA_scores4 <- accuracy(ARIMA_Four_for4$mean,ts_load_daily_test)
+
+# Model 3:  TBATS 
+TBATS_scores <- accuracy(TBATS_for$mean,ts_load_daily_test)
+
+# Model 4:  Neural Network 
+NN_scores <- accuracy(NN_for$mean,ts_load_daily_test)
+
+# Model 5:  Neural Network 2
+NN_scores2 <- accuracy(NN_for2$mean,ts_load_daily_test)
+```
+
+## Comparing scores; TBATS is the best with 9.17 score
+
+```{r}
+#Compare performance metrics
+scores_fit <- as.data.frame(
+  rbind(ETS_scores, ARIMA_scores, ARIMA_scores2, ARIMA_scores3, ARIMA_scores4, TBATS_scores, NN_scores, NN_scores2)
+  )
+row.names(scores_fit) <- c("STL+ETS", "ARIMA+Fourier", "ARIMA+Fourier2", "ARIMA+Fourier3", "ARIMA+Fourier4", "TBATS","NN", "NN2")
+
+#choose model with lowest RMSE
+best_model_index <- which.min(scores_fit[,"MAPE"])
+cat("The best model to forecast Summer by MAPE is:", row.names(scores_fit[best_model_index,]))    
+```
+
+```{r}
+# fit TBATS model to whole dataset and predict July 2011 (31 days)
+TBATS_fit_all <- tbats(ts_load_daily)
+
+#forecast July
+TBATS_for_july2011 <- forecast(TBATS_fit_all, h=31)
+
+#generate df
+TBATS.df <- data.frame(TBATS_for_july2011$mean)
+
+write.csv(TBATS.df, file = "Data/Submission2", row.names=F)
+
+
+#Plot foresting results
+autoplot(TBATS_for_july2011) 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(TBATS_for_july2011, series="TBATS forecast for 07/01/2011-07/31/2011",PI=FALSE)
+
+```
+
+# Projecting out all models
+
+```{r}
+# fit ETS model to whole dataset and predict July 2011 (31 days)
+ETS_fit_all <- stlf(ts_load_daily, h=31)
+
+#Plot foresting results
+autoplot(ETS_fit_all) 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(ETS_fit_all, series="ETS forecast for 07/01/2011-07/31/2011",PI=FALSE)
+
+# creating df and submission
+date <- seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = 1)
+ETS.df <- data.frame(date, ETS_fit_all$mean)
+write.csv(ETS.df, file = "./submission02.csv")
+```
+
+```{r}
+#Model 2: ARIMA + FOURIER terms
+#Fit arima model with fourier terms as exogenous regressors
+ARIMA_Four_fit_all <- auto.arima(ts_load_daily, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily, 
+                                          K=c(2,12))
+                             )
+#Forecast with ARIMA fit
+ARIMA_Four_for_all <- forecast(ARIMA_Four_fit_all,
+                           xreg=fourier(ts_load_daily,
+                                        K=c(2,12),
+                                        h=31),
+                           h=31
+                           ) 
+#plot
+autoplot(ts_load_daily) +
+  autolayer(ARIMA_Four_for_all, series="ARIMA 1 forecast for 07/01/2011-07/31/2011",PI=FALSE)
+
+# creating df and submission
+date <- seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = 1)
+ARIMA1.df <- data.frame(date, ARIMA_Four_for_all$mean)
+write.csv(ARIMA1.df, file = "./submission04.csv")
+```
+
+```{r}
+#Fit arima model with fourier terms as exogenous regressors. version 2
+ARIMA_Four_fit2_all <- auto.arima(ts_load_daily, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily, 
+                                          K=c(2,2))
+                             )
+ARIMA_Four_for2_all <- forecast(ARIMA_Four_fit2_all,
+                           xreg=fourier(ts_load_daily,
+                                        K=c(2,2),
+                                        h=31),
+                           h=31
+                           ) 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(ARIMA_Four_for2_all, series="ARIMA_FOURIER forecast 2 for June 2011",PI=FALSE) +
+  ylab("Load")
+
+# creating df and submission
+ARIMA2.df <- data.frame(date, ARIMA_Four_for2_all$mean)
+write.csv(ARIMA2.df, file = "./LinPace_05.csv")
+```
+
+```{r}
+#Fit arima model with fourier terms as exogenous regressors. version 3
+ARIMA_Four_fit3_all <- auto.arima(ts_load_daily, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily, 
+                                          K=c(2,4))
+                             )
+
+ARIMA_Four_for3_all <- forecast(ARIMA_Four_fit3_all,
+                           xreg=fourier(ts_load_daily,
+                                        K=c(2,4),
+                                        h=31),
+                           h=31
+                           ) 
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(ARIMA_Four_for3_all, series="ARIMA_FOURIER forecast 3 for June 2011",PI=FALSE) +
+  ylab("Load")
+
+# creating df and submission
+ARIMA3.df <- data.frame(date, ARIMA_Four_for3_all$mean)
+write.csv(ARIMA3.df, file = "./LinPace_06.csv")
+```
+
+```{r}
+#Fit arima model with fourier terms as exogenous regressors. version 4
+ARIMA_Four_fit4_all <- auto.arima(ts_load_daily, 
+                             seasonal=FALSE, 
+                             lambda=0,
+                             xreg=fourier(ts_load_daily, 
+                                          K=c(2,6))
+                             )
+
+ARIMA_Four_for4_all <- forecast(ARIMA_Four_fit4_all,
+                           xreg=fourier(ts_load_daily,
+                                        K=c(2,6),
+                                        h=31),
+                           h=31
+                           ) 
+
+#Plot model + observed data
+autoplot(ts_load_daily) +
+  autolayer(ARIMA_Four_for4_all, series="ARIMA_FOURIER forecast 4 for June 2011",PI=FALSE) +
+  ylab("Load")
+
+# creating df and submission
+ARIMA4.df <- data.frame(date, ARIMA_Four_for4_all$mean)
+write.csv(ARIMA4.df, file = "./LinPace_07.csv")
+
+```
+
