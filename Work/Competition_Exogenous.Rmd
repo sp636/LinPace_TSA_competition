@@ -1,0 +1,320 @@
+---
+hum <- read_excel("./Data/relative_humidity.xlsx")
+title: "Competition_Exogenous"
+author: "Zhenghao Lin"
+date: "2024-04-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, message=FALSE, warning=FALSE}
+#Install library
+library(lubridate)
+library(ggplot2)
+library(forecast)  
+library(Kendall)
+library(tseries)
+library(outliers)
+library(tidyverse)
+library(smooth)
+library(zoo)
+library(kableExtra)
+library(readxl)
+library(tseries)
+library(forecast)
+```
+
+```{r}
+#Import datasets
+load<- read_excel("./Data/load.xlsx")
+hum <- read_excel("./Data/relative_humidity.xlsx")
+temp <- read_excel("./Data/temperature.xlsx")
+```
+
+```{r}
+#Date & time objects conversion
+#load
+#The dataset "load" use hour as the columns and date as the rows. 
+#Adjust the dataset to be more suitable to convert into time series dataset.
+load <- pivot_longer(load, cols = starts_with("h"), names_to = "hour", values_to = "load")
+#Convert hour object as numeric
+load$hour <- as.numeric(gsub("h", "", load$hour))
+#Fix date columns and select needed columns
+load <- load %>% 
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hour) %>% 
+  select(Date, Year, Month, Day, Hour, load)
+
+#relative_humidity
+#Fix date columns and select needed columns
+hum <- hum %>%
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hr) %>%
+  select(Date, Year, Month, Day, Hour, rh_ws1:rh_ws28)
+
+#temperature
+#Fix date columns and select needed columns
+temp <- temp %>%
+  mutate(Date = ymd(date)) %>%
+  mutate(Year = year(date), 
+          Month = month(date), 
+          Day = day(date), 
+          Hour = hr) %>%
+  select(Date, Year, Month, Day, Hour, t_ws1:t_ws28)
+```
+
+```{r}
+#Creating data frames with daily observations
+#load
+load_daily <- load %>% 
+  filter(!is.na(load)) %>% 
+  group_by(Date,Year,Month,Day) %>% 
+  summarise( daily_mean_load = mean(load)) 
+
+ggplot(load_daily, aes(x=Date,y=daily_mean_load)) +
+  geom_line() +
+  ylab("Average Daily Load")
+
+summary(load_daily$daily_mean_load)
+
+#relative_humidity
+hum_daily <- hum %>% 
+  group_by(Date,Year,Month,Day) %>% 
+  summarise(daily_mean_hum = mean(c_across(rh_ws1:rh_ws28))) 
+
+#temperature
+temp_daily <- temp %>% 
+  group_by(Date,Year,Month,Day) %>% 
+  summarise(daily_mean_temp = mean(c_across(t_ws1:t_ws28))) %>%
+  na.omit()
+
+```
+
+```{r}
+#Transform daily dataframes into time series objects
+#load
+ts_load_daily <- msts(load_daily$daily_mean_load, 
+                           seasonal.periods =c(7,365.25),
+                           start=c(2005,1,1))
+
+ts_hum_daily <- msts(hum_daily$daily_mean_hum, 
+                           seasonal.periods =c(7,365.25),
+                           start=c(2005,1,1))
+
+ts_temp_daily <- msts(temp_daily$daily_mean_temp, 
+                           seasonal.periods =c(7,365.25),
+                           start=c(2005,1,1))
+
+```
+
+```{r}
+#create the training subset 
+total_days = length(ts_load_daily)
+days_june_2011 = 30
+days_july_2011 = 31
+
+ts_load_daily_train <- subset(ts_load_daily,
+                              end = total_days-days_june_2011)
+
+#create testing subset
+ts_load_daily_test <- subset(ts_load_daily,
+                                  start = total_days-days_june_2011)
+
+#Creat dataframe subset for plot fitting comparison
+ts_load_daily_fit_july11 <- subset(ts_load_daily,
+                                end = total_days+days_july_2011)
+
+
+autoplot(ts_load_daily_train)
+autoplot(ts_load_daily_test)
+#autoplot(ts_load_daily_fit_july11)
+```
+
+```{r}
+#Hum Train & Test
+ts_hum_daily_train <- subset(ts_hum_daily,
+                              end = total_days-days_june_2011)
+
+#create testing subset
+ts_hum_daily_test <- subset(ts_hum_daily,
+                                  start = total_days-days_june_2011)
+
+
+#Temp Train & Test
+ts_temp_daily_train <- subset(ts_temp_daily,
+                              end = total_days-days_june_2011)
+
+#ts_temp_daily_train <- subset()
+#create testing subset
+ts_temp_daily_test <- subset(ts_temp_daily,
+                                  start = total_days-days_june_2011)
+
+```
+
+```{r}
+#Model 2: ARIMA + FOURIER terms with temp
+#Write a function for the forecast
+ARIMA <- function(x, y, train_data, temp_data, hum_data, test_data) {
+  regressors <- as.matrix(data.frame(fourier(train_data, K=c(x, y)),
+                                     temp = temp_data,
+                                     hum = hum_data))
+  
+  temp_forecast <- forecast(temp_data, h=30)
+  hum_forecast <- forecast(hum_data, h=30)
+
+  regressors_forecast <- as.matrix(data.frame(fourier(train_data, K=c(x, y), h=30),
+                                              temp=temp_forecast$mean,
+                                              hum=hum_forecast$mean))
+
+  ARIMA_Four_fit <- auto.arima(train_data, 
+                               seasonal=FALSE, 
+                               lambda=0,
+                               xreg=regressors)
+
+  ARIMA_Four_for <- forecast(ARIMA_Four_fit,
+                              xreg=regressors_forecast,
+                              h=30)
+  scores <- accuracy(ARIMA_Four_for$mean, test_data)
+  return(scores[,"MAPE"])
+}
+```
+
+```{r}
+x_value <- 2
+y_values <- c(2, 4, 6, 12)
+for (y in y_values) {
+      mape <- ARIMA(x_value, y, ts_load_daily_train, ts_temp_daily_train, ts_hum_daily_train, ts_load_daily_test)
+
+      cat(sprintf("x: %d, y: %d, MAPE: %.4f\n", x_value, y, mape))
+}
+```
+Among all ARIMA forecasts, when x = 2, y = 12, MAPE is the lowest. It's 10.2572.
+
+```{r}
+NN <- function(p, P, x, y, train_data, temp_data, hum_data, test_data) {
+  regressors <- as.matrix(data.frame(fourier(train_data, K=c(x, y)),
+                                     temp = temp_data,
+                                     hum = hum_data))
+  
+  temp_forecast <- forecast(temp_data, h=30)
+  hum_forecast <- forecast(hum_data, h=30)
+
+  regressors_forecast <- as.matrix(data.frame(fourier(train_data, K=c(x, y), h=30),
+                                              temp=temp_forecast$mean,
+                                              hum=hum_forecast$mean))
+  NN_fit <- nnetar(train_data,
+                 p=p,
+                 P=P,
+                 xreg=regressors)
+  
+  NN_for <- forecast(NN_fit, h=30, xreg=regressors_forecast)
+  
+  scores <- accuracy(NN_for$mean, test_data)
+  return(scores[,"MAPE"])
+}
+
+best_score <- Inf
+best_params <- NULL
+
+p_values <- 1:2
+P_values <- 1:2
+x_value <- 2
+y_values <- c(2, 4, 6, 12)
+
+for (p in p_values) {
+  for (P in P_values) {
+    for (y in y_values) {
+      # Calculate MAPE for the current configuration
+      mape <- NN(p, P, x_value, y, ts_load_daily_train, ts_temp_daily_train, ts_hum_daily_train, ts_load_daily_test)
+      
+      cat(sprintf("p: %d, P: %d, x: %d, y: %d, MAPE: %.4f\n", p, P, x_value, y, mape))
+      
+    }
+  }
+} 
+```
+When p = 2, P = 1, x = 2, y = 12, the MAPE of NN forecast is the lowest. It's 19.9353.
+
+When including both exogenous regressors, temperature and relative humidity, ARIMA with x = 2 and y = 12 has the lowest MAPE, if not considering STL+ETS and TBATS.
+
+```{r}
+## Forecast of the best ARIMA model
+ARIMA_All_Forecast<- function(x, y, train_data, temp_data, hum_data) {
+  regressors <- as.matrix(data.frame(fourier(train_data, K=c(x, y)),
+                                     temp = temp_data,
+                                     hum = hum_data))
+  
+  temp_forecast <- forecast(temp_data, h=31)
+  hum_forecast <- forecast(hum_data, h=31)
+
+  regressors_forecast <- as.matrix(data.frame(fourier(train_data, K=c(x, y), h=31),
+                                              temp=temp_forecast$mean,
+                                              hum=hum_forecast$mean))
+
+  ARIMA_Four_fit <- auto.arima(train_data, 
+                               seasonal=FALSE, 
+                               lambda=0,
+                               xreg=regressors)
+
+  ARIMA_Four_for <- forecast(ARIMA_Four_fit,
+                              xreg=regressors_forecast,
+                              h=31)
+  
+  ARIMA_all_df <- data.frame(ARIMA_Four_for$mean)
+  
+  write.csv(ARIMA_all_df, file = "./Data/Submission3", row.names=F)
+  
+  autoplot(train_data) +
+  autolayer(ARIMA_Four_for, series="ARIMA_FOURIER forecast for July 2011",PI=FALSE) +
+  ylab("Load")
+  
+
+}
+
+ARIMA_All_Forecast(2, 12, ts_load_daily, ts_temp_daily, ts_hum_daily)
+```
+
+```{r}
+#Forecast of best NN model
+NN_All_Forecast <- function(p, P, x, y, train_data, temp_data, hum_data) {
+  regressors <- as.matrix(data.frame(fourier(train_data, K=c(x, y)),
+                                     temp = temp_data,
+                                     hum = hum_data))
+  
+  temp_forecast <- forecast(temp_data, h=31)
+  hum_forecast <- forecast(hum_data, h=31)
+
+  regressors_forecast <- as.matrix(data.frame(fourier(train_data, K=c(x, y), h=31),
+                                              temp=temp_forecast$mean,
+                                              hum=hum_forecast$mean))
+  NN_fit <- nnetar(train_data,
+                 p=p,
+                 P=P,
+                 xreg=regressors)
+  
+  NN_for <- forecast(NN_fit, h=31, xreg=regressors_forecast)
+  
+  NN_all_df <- data.frame(NN_for$mean)
+  
+  write.csv(NN_all_df, file = "./Data/Submission4", row.names=F)
+  
+  autoplot(train_data) +
+  autolayer(NN_for, series="Neural Network forecast for July 2011",PI=FALSE) +
+  ylab("Load")
+}
+
+NN_All_Forecast(2, 1, 2, 12, ts_load_daily, ts_temp_daily, ts_hum_daily)
+```
+
+
+
+
